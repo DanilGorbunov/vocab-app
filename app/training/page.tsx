@@ -3,9 +3,7 @@
 import { useQuery, useMutation, useConvexAuth } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
-import { useGuestWords, GuestWord } from "@/hooks/useGuestWords";
 import { AppNav } from "@/components/AppNav";
-import { SaveBanner } from "@/components/SaveBanner";
 import { SpeakButton } from "@/components/SpeakButton";
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -51,16 +49,15 @@ function buildQuestions(training: AnyWord[], all: AnyWord[]): Question[] {
 export default function TrainingPage() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const router = useRouter();
-  const isGuest = !isLoading && !isAuthenticated;
 
-  // Auth mode
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) router.replace("/login");
+  }, [isAuthenticated, isLoading, router]);
+
   const convexAll = useQuery(api.words.list);
   const convexTraining = useQuery(api.words.getForTraining);
   const submitAnswer = useMutation(api.training.submitAnswer);
   const stats = useQuery(api.training.getStats);
-
-  // Guest mode
-  const { words: guestWords, updateWord } = useGuestWords();
 
   const [questions, setQuestions] = useState<Question[]>([]);
   const [current, setCurrent] = useState(0);
@@ -72,36 +69,21 @@ export default function TrainingPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioBlobUrlRef = useRef<string | null>(null);
 
-  // Build questions once — don't rebuild while a session is in progress
   useEffect(() => {
-    if (isLoading || ready) return;
+    if (isLoading || ready || !isAuthenticated) return;
+    if (!convexAll || !convexTraining || convexAll.length < 4) return;
+    const all: AnyWord[] = convexAll.map((w) => ({ id: w._id, word: w.word, translation: w.translation, example: w.example, xp: w.xp, status: w.status }));
+    const source = convexTraining.length > 0 ? convexTraining : [...convexAll].sort(() => Math.random() - 0.5).slice(0, 10);
+    const training: AnyWord[] = source.map((w) => ({ id: w._id, word: w.word, translation: w.translation, example: w.example, xp: w.xp, status: w.status }));
+    setQuestions(buildQuestions(training, all));
+    setReady(true);
+  }, [isLoading, ready, isAuthenticated, convexAll, convexTraining]);
 
-    if (isGuest) {
-      if (guestWords.length < 4) return;
-      const training = [...guestWords].sort(() => Math.random() - 0.5).slice(0, 10);
-      const all: AnyWord[] = guestWords.map((w: GuestWord) => ({ ...w, id: w.id }));
-      const trainingAny: AnyWord[] = training.map((w: GuestWord) => ({ ...w, id: w.id }));
-      setQuestions(buildQuestions(trainingAny, all));
-      setReady(true);
-    } else {
-      if (!convexAll || !convexTraining || convexAll.length < 4) return;
-      const all: AnyWord[] = convexAll.map((w) => ({ id: w._id, word: w.word, translation: w.translation, example: w.example, xp: w.xp, status: w.status }));
-      const source = convexTraining.length > 0 ? convexTraining : [...convexAll].sort(() => Math.random() - 0.5).slice(0, 10);
-      const training: AnyWord[] = source.map((w) => ({ id: w._id, word: w.word, translation: w.translation, example: w.example, xp: w.xp, status: w.status }));
-      setQuestions(buildQuestions(training, all));
-      setReady(true);
-    }
-  }, [isLoading, ready, isGuest, guestWords, convexAll, convexTraining]);
-
-  // Auto-play TTS when a new question appears
   useEffect(() => {
     if (!ready || questions.length === 0 || done) return;
     const q = questions[current];
-    const text = q.word.example
-      ? `${q.word.word}. ${q.word.example}`
-      : q.word.word;
+    const text = q.word.example ? `${q.word.word}. ${q.word.example}` : q.word.word;
 
-    // Cancel any previous audio
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
     if (audioBlobUrlRef.current) { URL.revokeObjectURL(audioBlobUrlRef.current); audioBlobUrlRef.current = null; }
 
@@ -127,7 +109,6 @@ export default function TrainingPage() {
       .catch(() => setTtsPlaying(false));
   }, [current, ready, done]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cleanup on unmount
   useEffect(() => () => {
     if (audioRef.current) { audioRef.current.pause(); }
     if (audioBlobUrlRef.current) { URL.revokeObjectURL(audioBlobUrlRef.current); }
@@ -138,19 +119,10 @@ export default function TrainingPage() {
     const isCorrect = norm(option) === norm(questions[current].correct);
     setSelected(option);
     setResults((r) => [...r, isCorrect]);
-
-    if (isGuest) {
-      // Update XP locally
-      const w = questions[current].word;
-      const newXp = Math.max(0, w.xp + (isCorrect ? 10 : -5));
-      const newStatus = newXp >= 100 ? "mastered" : newXp >= 30 ? "learning" : "new";
-      updateWord(w.id, { xp: newXp, status: newStatus as GuestWord["status"] });
-    } else {
-      await submitAnswer({
-        wordId: questions[current].word.id as Id<"words">,
-        correct: isCorrect,
-      });
-    }
+    await submitAnswer({
+      wordId: questions[current].word.id as Id<"words">,
+      correct: isCorrect,
+    });
   }
 
   function handleNext() {
@@ -166,18 +138,18 @@ export default function TrainingPage() {
     setCurrent(0); setSelected(null); setResults([]); setDone(false); setReady(false); setQuestions([]);
   }
 
-  // Not enough words
-  const wordCount = isGuest ? guestWords.length : (convexAll?.length ?? 0);
-  const dataReady = isGuest ? true : (convexAll !== undefined);
+  if (isLoading || !isAuthenticated) return null;
 
-  if (!dataReady || isLoading) {
+  const wordCount = convexAll?.length ?? 0;
+  const dataReady = convexAll !== undefined;
+
+  if (!dataReady) {
     return <div className="flex min-h-screen items-center justify-center bg-[#f7f7f5]"><p className="text-zinc-400">Loading…</p></div>;
   }
 
   if (wordCount < 4) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-[#f7f7f5] px-4">
-        {isGuest && <SaveBanner count={guestWords.length} />}
         <div className="text-center">
           <div className="mb-4 text-5xl">📚</div>
           <p className="mb-2 text-lg font-semibold text-zinc-800">Not enough words</p>
@@ -197,13 +169,12 @@ export default function TrainingPage() {
     const pct = Math.round((correct / total) * 100);
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-[#f7f7f5] px-4">
-        {isGuest && <SaveBanner count={guestWords.length} />}
-        <div className={`w-full max-w-sm ${isGuest ? "mt-10" : ""}`}>
+        <div className="w-full max-w-sm">
           <div className="rounded-3xl bg-white p-8 shadow-sm text-center">
             <div className="mb-4 text-6xl">{correct === total ? "🎉" : correct >= total / 2 ? "👍" : "📚"}</div>
             <h2 className="mb-1 text-4xl font-bold text-zinc-900">{correct}<span className="text-zinc-300">/{total}</span></h2>
             <p className="mb-2 text-sm text-zinc-500">{pct}% correct</p>
-            {!isGuest && stats && (
+            {stats && (
               <div className="my-4 flex justify-center gap-6 border-y border-zinc-100 py-4">
                 <div className="text-center">
                   <p className="text-lg font-bold text-zinc-900">{stats.totalXP}</p>
@@ -219,22 +190,13 @@ export default function TrainingPage() {
                 </div>
               </div>
             )}
-            {isGuest && (
-              <p className="my-4 text-sm text-zinc-500">Create an account to track XP, streaks and unlock AI texts.</p>
-            )}
             <div className="flex flex-col gap-2">
               <button onClick={reset} className="w-full rounded-xl bg-zinc-900 py-3 text-sm font-semibold text-white hover:bg-zinc-700">
                 Train again
               </button>
-              {isGuest ? (
-                <button onClick={() => router.push("/login")} className="w-full rounded-xl border border-zinc-200 bg-white py-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
-                  Save progress & sign up
-                </button>
-              ) : (
-                <Link href="/dictionary" className="block w-full rounded-xl border border-zinc-200 bg-white py-3 text-center text-sm font-medium text-zinc-700 hover:bg-zinc-50">
-                  Back to Dictionary
-                </Link>
-              )}
+              <Link href="/dictionary" className="block w-full rounded-xl border border-zinc-200 bg-white py-3 text-center text-sm font-medium text-zinc-700 hover:bg-zinc-50">
+                Back to Dictionary
+              </Link>
             </div>
           </div>
         </div>
@@ -252,16 +214,12 @@ export default function TrainingPage() {
   const progress = ((current + (selected ? 1 : 0)) / questions.length) * 100;
 
   return (
-    <div className={`flex min-h-screen flex-col bg-[#f7f7f5] ${isGuest ? "pt-12" : ""}`}>
-      {isGuest && <SaveBanner count={guestWords.length} />}
-
-      {/* Progress bar — full width at top */}
+    <div className="flex min-h-screen flex-col bg-[#f7f7f5]">
       <div className="h-1 w-full bg-zinc-200">
         <div className="h-1 bg-zinc-900 transition-all duration-300" style={{ width: `${progress}%` }} />
       </div>
 
       <div className="mx-auto flex w-full max-w-md flex-1 flex-col px-5 pb-28 pt-6">
-        {/* Counter */}
         <div className="mb-8 flex items-center justify-between">
           <Link href="/dictionary" className="text-sm text-zinc-400 hover:text-zinc-700">← Back</Link>
           <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-500">
@@ -269,7 +227,6 @@ export default function TrainingPage() {
           </span>
         </div>
 
-        {/* Word card */}
         <div className="mb-8 rounded-3xl bg-white p-8 text-center shadow-sm">
           <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-400">Translate to Ukrainian</p>
           <div className="flex items-center justify-center gap-3">
@@ -289,7 +246,6 @@ export default function TrainingPage() {
           )}
         </div>
 
-        {/* Options */}
         <div className="flex flex-col gap-3">
           {q.options.map((option, optIdx) => {
             let base = "relative w-full rounded-2xl px-5 py-4 text-left text-sm font-medium transition-all duration-150";
@@ -313,7 +269,6 @@ export default function TrainingPage() {
           })}
         </div>
 
-        {/* Feedback + next */}
         {selected && (
           <div className="mt-6">
             <div className={`mb-3 rounded-2xl px-4 py-3 text-center text-sm font-semibold ${isCorrect ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"}`}>
