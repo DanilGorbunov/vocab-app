@@ -1,42 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge"; // Runs on Cloudflare edge, not AWS Lambda — bypasses YouTube IP blocks
-
-const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-
-// Try multiple clients in order — Vercel IPs may be blocked for some
-const CLIENTS = [
-  {
-    clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-    clientVersion: "2.0",
-    clientNameId: "85",
-    userAgent: "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1",
-    embedUrl: "https://www.youtube.com/",
-  },
-  {
-    clientName: "WEB_EMBEDDED_PLAYER",
-    clientVersion: "1.20231204.01.00",
-    clientNameId: "56",
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    embedUrl: "https://www.youtube.com/",
-  },
-  {
-    clientName: "ANDROID",
-    clientVersion: "19.09.37",
-    clientNameId: "3",
-    userAgent: "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
-    embedUrl: null,
-  },
-  {
-    clientName: "IOS",
-    clientVersion: "19.09.3",
-    clientNameId: "5",
-    userAgent: "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)",
-    embedUrl: null,
-  },
-] as const;
-
-type CaptionTrack = { baseUrl: string; languageCode: string };
+export const runtime = "edge";
 
 function extractVideoId(url: string): string | null {
   const patterns = [
@@ -50,35 +14,51 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-async function getCaptionTracks(videoId: string, client: typeof CLIENTS[number]): Promise<CaptionTrack[] | null> {
-  const context: Record<string, unknown> = {
-    client: {
-      clientName: client.clientName,
-      clientVersion: client.clientVersion,
-      hl: "en",
-      gl: "US",
+// Extracts a JSON array at `key` from raw HTML — properly skips string contents
+function extractJsonArray(html: string, key: string): unknown[] | null {
+  const needle = `"${key}":`;
+  const keyIdx = html.indexOf(needle);
+  if (keyIdx === -1) return null;
+  const start = html.indexOf("[", keyIdx + needle.length);
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+
+  for (let i = start; i < html.length; i++) {
+    const c = html[i];
+    if (escaped) { escaped = false; continue; }
+    if (c === "\\" && inStr) { escaped = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "[") depth++;
+    else if (c === "]") {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(html.slice(start, i + 1)); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+type CaptionTrack = { baseUrl: string; languageCode: string; kind?: string };
+
+// Fetch the watch page and extract captionTracks from ytInitialPlayerResponse
+async function getTracksFromPage(videoId: string, userAgent: string): Promise<CaptionTrack[] | null> {
+  const res = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+    headers: {
+      "User-Agent": userAgent,
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     },
-    ...(client.embedUrl ? { thirdParty: { embedUrl: client.embedUrl } } : {}),
-  };
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "User-Agent": client.userAgent,
-    "X-YouTube-Client-Name": client.clientNameId,
-    "X-YouTube-Client-Version": client.clientVersion,
-    "Accept-Language": "en-US,en;q=0.9",
-    ...(client.embedUrl ? { "Origin": "https://www.youtube.com", "Referer": "https://www.youtube.com/" } : {}),
-  };
-
-  const res = await fetch(
-    `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}&prettyPrint=false`,
-    { method: "POST", headers, body: JSON.stringify({ videoId, context }) }
-  );
-
+  });
   if (!res.ok) return null;
-  const data = await res.json();
-  const tracks: CaptionTrack[] = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-  return tracks.length > 0 ? tracks : null;
+  const html = await res.text();
+  if (!html.includes("captionTracks")) return null;
+  const tracks = extractJsonArray(html, "captionTracks");
+  return tracks?.length ? (tracks as CaptionTrack[]) : null;
 }
 
 async function fetchSegments(baseUrl: string) {
@@ -97,6 +77,17 @@ async function fetchSegments(baseUrl: string) {
     .filter((s: { text: string }) => s.text.length > 0);
 }
 
+const USER_AGENTS = [
+  // Mobile Android
+  "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Mobile Safari/537.36",
+  // Desktop Chrome
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  // iOS Safari
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1",
+  // Googlebot (sometimes bypasses bot checks)
+  "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+];
+
 export async function POST(req: NextRequest) {
   try {
     const { url } = await req.json();
@@ -106,9 +97,9 @@ export async function POST(req: NextRequest) {
     if (!videoId) return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
 
     let tracks: CaptionTrack[] | null = null;
-    for (const client of CLIENTS) {
+    for (const ua of USER_AGENTS) {
       try {
-        tracks = await getCaptionTracks(videoId, client);
+        tracks = await getTracksFromPage(videoId, ua);
         if (tracks) break;
       } catch {
         continue;
@@ -122,9 +113,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const track = tracks.find((t) => t.languageCode === "en")
-      ?? tracks.find((t) => t.languageCode?.startsWith("en"))
-      ?? tracks[0];
+    const track =
+      tracks.find((t) => t.languageCode === "en" && !t.kind) ??
+      tracks.find((t) => t.languageCode?.startsWith("en") && !t.kind) ??
+      tracks.find((t) => t.languageCode === "en") ??
+      tracks.find((t) => t.languageCode?.startsWith("en")) ??
+      tracks[0];
 
     if (!track?.baseUrl) {
       return NextResponse.json({ error: "No caption URL found." }, { status: 404 });
@@ -143,7 +137,7 @@ export async function POST(req: NextRequest) {
     try {
       const oembed = await fetch(`https://www.youtube.com/oembed?url=https://youtube.com/watch?v=${videoId}&format=json`);
       if (oembed.ok) title = (await oembed.json()).title ?? "";
-    } catch { /* title is optional */ }
+    } catch { /* optional */ }
 
     return NextResponse.json({ videoId, title, segments });
   } catch (e: unknown) {
