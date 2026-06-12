@@ -333,7 +333,7 @@ export default function ReadPage() {
     const phrase = activeText.markedWords[idx];
     const vocabWord = words.find((w) => w.word.toLowerCase() === phrase.word.toLowerCase());
     if (vocabWord) {
-      if (isGuest) removeGuest(vocabWord.id);
+      if (isGuest) removeGuest((vocabWord as any).id);
       else removeConvexWord({ wordId: (vocabWord as any)._id });
     }
     updateActiveText((t) => ({ ...t, markedWords: t.markedWords.filter((_, i) => i !== idx) }));
@@ -354,7 +354,7 @@ export default function ReadPage() {
     const old = activeText.markedWords[idx];
     const vocabWord = words.find((v) => v.word.toLowerCase() === old.word.toLowerCase());
     if (vocabWord) {
-      if (isGuest) updateGuestWord(vocabWord.id, { word: w, translation: t });
+      if (isGuest) updateGuestWord((vocabWord as any).id, { word: w, translation: t });
       else await updateConvexWord({ wordId: (vocabWord as any)._id, word: w, translation: t });
     }
     updateActiveText((t2) => ({
