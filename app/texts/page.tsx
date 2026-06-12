@@ -6,7 +6,9 @@ import { useGuestWords } from "@/hooks/useGuestWords";
 import { useLocalTexts } from "@/hooks/useLocalTexts";
 import { AppNav } from "@/components/AppNav";
 import { SaveBanner } from "@/components/SaveBanner";
-import { useState } from "react";
+import { InteractiveSentence, LearnedWordInfo } from "@/components/InteractiveSentence";
+import { SelectionTooltip } from "@/components/SelectionTooltip";
+import { useState, useMemo } from "react";
 
 type Paragraph = { en: string; uk: string };
 type AnyText = {
@@ -17,11 +19,23 @@ type AnyText = {
   createdAt: number;
 };
 
-function ParagraphBlock({ p }: { p: Paragraph }) {
+function ParagraphBlock({
+  p,
+  onAdd,
+  learnedWords,
+}: {
+  p: Paragraph;
+  onAdd?: (word: string, translation: string) => boolean;
+  learnedWords?: Map<string, LearnedWordInfo>;
+}) {
   const [showUk, setShowUk] = useState(false);
   return (
     <div className="rounded-xl bg-zinc-50 p-4">
-      <p className="text-sm leading-relaxed text-zinc-800">{p.en}</p>
+      <SelectionTooltip onAdd={onAdd}>
+        <p className="text-sm leading-relaxed text-zinc-800">
+          <InteractiveSentence sentence={p.en} onAdd={onAdd} learnedWords={learnedWords} />
+        </p>
+      </SelectionTooltip>
       {showUk && (
         <p className="mt-2 border-t border-zinc-200 pt-2 text-sm italic leading-relaxed text-zinc-500">
           {p.uk}
@@ -37,7 +51,17 @@ function ParagraphBlock({ p }: { p: Paragraph }) {
   );
 }
 
-function TextCard({ text, onDelete }: { text: AnyText; onDelete: () => void }) {
+function TextCard({
+  text,
+  onDelete,
+  onAdd,
+  learnedWords,
+}: {
+  text: AnyText;
+  onDelete: () => void;
+  onAdd?: (word: string, translation: string) => boolean;
+  learnedWords?: Map<string, LearnedWordInfo>;
+}) {
   const [open, setOpen] = useState(false);
   const date = new Date(text.createdAt).toLocaleDateString("uk-UA", {
     day: "numeric",
@@ -69,7 +93,7 @@ function TextCard({ text, onDelete }: { text: AnyText; onDelete: () => void }) {
         <div className="border-t border-zinc-100 px-5 pb-5 pt-4">
           <div className="flex flex-col gap-3">
             {text.paragraphs.map((p, i) => (
-              <ParagraphBlock key={i} p={p} />
+              <ParagraphBlock key={i} p={p} onAdd={onAdd} learnedWords={learnedWords} />
             ))}
           </div>
           <button
@@ -91,11 +115,13 @@ export default function TextsPage() {
   // Convex (auth)
   const convexTexts = useQuery(api.texts.list) as AnyText[] | undefined;
   const convexWords = useQuery(api.words.getLastN, { n: 10 });
+  const convexAllWords = useQuery(api.words.list);
   const generate = useAction(api.texts.generate);
   const removeConvexText = useMutation(api.texts.remove);
+  const addConvexWord = useMutation(api.words.add);
 
   // Guest (localStorage)
-  const { words: guestWords } = useGuestWords();
+  const { words: guestWords, add: addGuest } = useGuestWords();
   const { texts: localTexts, add: addLocalText, remove: removeLocalText } = useLocalTexts();
 
   const [topic, setTopic] = useState("");
@@ -132,6 +158,27 @@ export default function TextsPage() {
     } finally {
       setGenerating(false);
     }
+  }
+
+  const learnedWords = useMemo(() => {
+    const map = new Map<string, LearnedWordInfo>();
+    const src = isGuest ? guestWords : (convexAllWords ?? []);
+    for (const w of src) {
+      map.set(w.word.toLowerCase(), {
+        translation: w.translation,
+        status: w.status as LearnedWordInfo["status"],
+      });
+    }
+    return map;
+  }, [isGuest, guestWords, convexAllWords]);
+
+  function handleAddWord(word: string, translation: string): boolean {
+    const existing = isGuest ? guestWords : (convexAllWords ?? []);
+    const dup = existing.some((x) => x.word.toLowerCase() === word.toLowerCase());
+    if (dup) return false;
+    if (isGuest) addGuest(word, translation);
+    else addConvexWord({ word, translation });
+    return true;
   }
 
   const wordList = isGuest ? guestWords.slice(0, 10) : (convexWords ?? []);
@@ -209,6 +256,8 @@ export default function TextsPage() {
             <TextCard
               key={t._id}
               text={t}
+              onAdd={handleAddWord}
+              learnedWords={learnedWords}
               onDelete={() =>
                 isGuest
                   ? removeLocalText(t._id)

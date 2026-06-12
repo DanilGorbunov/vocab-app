@@ -18,17 +18,18 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const guestCount = typeof window !== "undefined" ? getGuestWords().length : 0;
+  const [guestCount, setGuestCount] = useState(0);
 
   useEffect(() => {
     if (!isLoading && isAuthenticated) router.replace("/dictionary");
   }, [isAuthenticated, isLoading, router]);
 
-  // Auto-switch to register if guest has words
+  // Read localStorage only after mount to avoid SSR hydration mismatch
   useEffect(() => {
-    if (guestCount > 0) setIsRegister(true);
-  }, [guestCount]);
+    const count = getGuestWords().length;
+    setGuestCount(count);
+    if (count > 0) setIsRegister(true);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -86,6 +87,7 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoComplete="email"
               className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
             />
             <input
@@ -94,6 +96,7 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              autoComplete={isRegister ? "new-password" : "current-password"}
               className="rounded-lg border border-zinc-200 px-4 py-2.5 text-sm outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
             />
             {error && <p className="text-sm text-red-500">{error}</p>}

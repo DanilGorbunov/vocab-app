@@ -30,14 +30,21 @@ function shuffle<T>(arr: T[]): T[] {
   return [...arr].sort(() => Math.random() - 0.5);
 }
 
+function norm(s: string) { return s.trim().normalize("NFC"); }
+
 function buildQuestions(training: AnyWord[], all: AnyWord[]): Question[] {
   return training.map((w) => {
-    const others = all
+    const correct = norm(w.translation);
+    const distractors = all
       .filter((o) => o.id !== w.id)
       .sort(() => Math.random() - 0.5)
-      .slice(0, 3)
-      .map((o) => o.translation);
-    return { word: w, options: shuffle([...others, w.translation]), correct: w.translation };
+      .reduce<string[]>((acc, o) => {
+        const t = norm(o.translation);
+        if (t !== correct && !acc.includes(t)) acc.push(t);
+        return acc;
+      }, [])
+      .slice(0, 3);
+    return { word: w, options: shuffle([...distractors, correct]), correct };
   });
 }
 
@@ -62,9 +69,9 @@ export default function TrainingPage() {
   const [done, setDone] = useState(false);
   const [ready, setReady] = useState(false);
 
-  // Build questions once data is available
+  // Build questions once — don't rebuild while a session is in progress
   useEffect(() => {
-    if (isLoading) return;
+    if (isLoading || ready) return;
 
     if (isGuest) {
       if (guestWords.length < 4) return;
@@ -76,15 +83,16 @@ export default function TrainingPage() {
     } else {
       if (!convexAll || !convexTraining || convexAll.length < 4) return;
       const all: AnyWord[] = convexAll.map((w) => ({ id: w._id, word: w.word, translation: w.translation, example: w.example, xp: w.xp, status: w.status }));
-      const training: AnyWord[] = convexTraining.map((w) => ({ id: w._id, word: w.word, translation: w.translation, example: w.example, xp: w.xp, status: w.status }));
+      const source = convexTraining.length > 0 ? convexTraining : [...convexAll].sort(() => Math.random() - 0.5).slice(0, 10);
+      const training: AnyWord[] = source.map((w) => ({ id: w._id, word: w.word, translation: w.translation, example: w.example, xp: w.xp, status: w.status }));
       setQuestions(buildQuestions(training, all));
       setReady(true);
     }
-  }, [isLoading, isGuest, guestWords, convexAll, convexTraining]);
+  }, [isLoading, ready, isGuest, guestWords, convexAll, convexTraining]);
 
   async function handleSelect(option: string) {
     if (selected !== null) return;
-    const isCorrect = option === questions[current].correct;
+    const isCorrect = norm(option) === norm(questions[current].correct);
     setSelected(option);
     setResults((r) => [...r, isCorrect]);
 
@@ -232,7 +240,7 @@ export default function TrainingPage() {
 
         {/* Options */}
         <div className="flex flex-col gap-3">
-          {q.options.map((option) => {
+          {q.options.map((option, optIdx) => {
             let base = "relative w-full rounded-2xl px-5 py-4 text-left text-sm font-medium transition-all duration-150";
             if (selected) {
               if (option === q.correct)
@@ -245,7 +253,7 @@ export default function TrainingPage() {
               base += " bg-white text-zinc-800 ring-1 ring-zinc-200 hover:ring-2 hover:ring-zinc-400 active:scale-[0.98] cursor-pointer shadow-sm";
             }
             return (
-              <button key={option} className={base} onClick={() => handleSelect(option)} disabled={!!selected}>
+              <button key={`${option}-${optIdx}`} className={base} onClick={() => handleSelect(option)} disabled={!!selected}>
                 {selected && option === q.correct && <span className="mr-2">✓</span>}
                 {selected && option === selected && option !== q.correct && <span className="mr-2">✗</span>}
                 {option}

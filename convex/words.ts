@@ -86,6 +86,26 @@ export const bulkAdd = mutation({
   },
 });
 
+export const update = mutation({
+  args: {
+    wordId: v.id("words"),
+    word: v.string(),
+    translation: v.string(),
+    example: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    const existing = await ctx.db.get(args.wordId);
+    if (!existing || existing.userId !== userId) throw new Error("Not found");
+    await ctx.db.patch(args.wordId, {
+      word: args.word,
+      translation: args.translation,
+      example: args.example,
+    });
+  },
+});
+
 export const getForTraining = query({
   args: {},
   handler: async (ctx) => {

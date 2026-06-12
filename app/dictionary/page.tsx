@@ -21,21 +21,24 @@ function ExampleWithTooltip({ example, word, translation }: { example: string; w
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const parts = example.split(new RegExp(`(${escaped})`, "i"));
   return (
-    <p className="text-xs italic text-zinc-400 truncate">
-      {parts.map((part, i) =>
-        part.toLowerCase() === word.toLowerCase() ? (
-          <span key={i} className="relative group/tip inline-block">
-            <span className="underline decoration-dotted decoration-zinc-300 cursor-default text-zinc-500">{part}</span>
-            <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 hidden group-hover/tip:flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white shadow-lg">
-              {translation}
-              <span className="pointer-events-auto"><SpeakButton text={word} className="text-zinc-400 hover:text-white" /></span>
+    <div className="flex items-center gap-1.5 min-w-0">
+      <p className="text-xs italic text-zinc-400 truncate">
+        {parts.map((part, i) =>
+          part.toLowerCase() === word.toLowerCase() ? (
+            <span key={i} className="relative group/tip inline-block">
+              <span className="underline decoration-dotted decoration-zinc-300 cursor-default text-zinc-500">{part}</span>
+              <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 hidden group-hover/tip:flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white shadow-lg">
+                {translation}
+                <span className="pointer-events-auto"><SpeakButton text={word} className="text-zinc-400 hover:text-white" /></span>
+              </span>
             </span>
-          </span>
-        ) : (
-          <span key={i}>{part}</span>
-        )
-      )}
-    </p>
+          ) : (
+            <span key={i}>{part}</span>
+          )
+        )}
+      </p>
+      <SpeakButton text={example} className="shrink-0 text-zinc-200 hover:text-zinc-500" />
+    </div>
   );
 }
 
@@ -55,23 +58,36 @@ export default function DictionaryPage() {
   const convexWords = useQuery(api.words.list);
   const addConvexWord = useMutation(api.words.add);
   const removeConvexWord = useMutation(api.words.remove);
+  const updateConvexWord = useMutation(api.words.update);
   const stats = useQuery(api.training.getStats);
 
-  const { words: guestWords, add: addGuest, remove: removeGuest } = useGuestWords();
+  const { words: guestWords, add: addGuest, remove: removeGuest, updateWord: updateGuestWord } = useGuestWords();
 
   const [wordInput, setWordInput] = useState("");
   const [translation, setTranslation] = useState("");
   const [translationLoading, setTranslationLoading] = useState(false);
+  const [translationFailed, setTranslationFailed] = useState(false);
   const [example, setExample] = useState("");
   const [exampleLoading, setExampleLoading] = useState(false);
+  const [exampleFailed, setExampleFailed] = useState(false);
   const [adding, setAdding] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editWord, setEditWord] = useState("");
+  const [editTranslation, setEditTranslation] = useState("");
+  const [editExample, setEditExample] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editExampleLoading, setEditExampleLoading] = useState(false);
+  const [spellCheck, setSpellCheck] = useState<{ corrected: string; mistakes: { wrong: string; right: string }[] } | null>(null);
+  const [spellCheckLoading, setSpellCheckLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const translateDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const spellDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const generateExample = useCallback(async (word: string, trans: string) => {
     if (!word.trim()) return;
     setExampleLoading(true);
+    setExampleFailed(false);
     setExample("");
     try {
       const res = await fetch("/api/generate-example", {
@@ -80,8 +96,23 @@ export default function DictionaryPage() {
         body: JSON.stringify({ word: word.trim(), translation: trans.trim() }),
       });
       const data = await res.json();
-      if (data.sentence) setExample(data.sentence);
-    } catch { /* silent */ } finally {
+      if (data.sentence) {
+        setExample(data.sentence);
+        // Re-translate using the example as context for idiomatic accuracy
+        fetch("/api/translate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ word: word.trim(), example: data.sentence }),
+        })
+          .then((r) => r.json())
+          .then((d) => { if (d.translation) setTranslation(d.translation); })
+          .catch(() => {});
+      } else {
+        setExampleFailed(true);
+      }
+    } catch {
+      setExampleFailed(true);
+    } finally {
       setExampleLoading(false);
     }
   }, []);
@@ -89,6 +120,7 @@ export default function DictionaryPage() {
   async function autoTranslate(word: string) {
     if (!word.trim() || word.trim().length < 2) return;
     setTranslationLoading(true);
+    setTranslationFailed(false);
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
@@ -98,10 +130,15 @@ export default function DictionaryPage() {
       const data = await res.json();
       if (data.translation) {
         setTranslation(data.translation);
-        // Once we have translation, generate example too
         generateExample(word, data.translation);
+      } else {
+        setTranslationFailed(true);
+        setExampleFailed(true);
       }
-    } catch { /* silent */ } finally {
+    } catch {
+      setTranslationFailed(true);
+      setExampleFailed(true);
+    } finally {
       setTranslationLoading(false);
     }
   }
@@ -109,18 +146,42 @@ export default function DictionaryPage() {
   // Auto-translate + generate example when word changes (debounced 700ms)
   function handleWordChange(val: string) {
     setWordInput(val);
+    setSpellCheck(null);
     // Reset dependent fields
     if (translateDebounceRef.current) clearTimeout(translateDebounceRef.current);
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (spellDebounceRef.current) clearTimeout(spellDebounceRef.current);
     if (val.trim().length >= 2) {
       translateDebounceRef.current = setTimeout(() => {
         setTranslation("");
         setExample("");
+        setTranslationFailed(false);
+        setExampleFailed(false);
         autoTranslate(val);
       }, 700);
+      spellDebounceRef.current = setTimeout(async () => {
+        setSpellCheckLoading(true);
+        try {
+          const res = await fetch("/api/spell-check", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: val.trim() }),
+          });
+          const data = await res.json();
+          if (data.hasErrors && data.mistakes?.length > 0) {
+            setSpellCheck({ corrected: data.corrected, mistakes: data.mistakes });
+          }
+        } catch {
+          // ignore spell-check errors silently
+        } finally {
+          setSpellCheckLoading(false);
+        }
+      }, 900);
     } else {
       setTranslation("");
       setExample("");
+      setTranslationFailed(false);
+      setExampleFailed(false);
     }
   }
 
@@ -140,6 +201,10 @@ export default function DictionaryPage() {
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!wordInput.trim() || !translation.trim()) return;
+    const exists = words.some(
+      (x) => x.word.toLowerCase() === wordInput.trim().toLowerCase()
+    );
+    if (exists) return;
     setAdding(true);
     if (isGuest) {
       addGuest(wordInput.trim(), translation.trim(), example.trim() || undefined);
@@ -147,6 +212,7 @@ export default function DictionaryPage() {
       await addConvexWord({ word: wordInput.trim(), translation: translation.trim(), example: example.trim() || undefined });
     }
     setWordInput(""); setTranslation(""); setExample(""); setExampleLoading(false);
+    setSpellCheck(null); setSpellCheckLoading(false);
     setShowForm(false);
     setAdding(false);
   }
@@ -154,6 +220,54 @@ export default function DictionaryPage() {
   function handleRemove(id: string) {
     if (isGuest) removeGuest(id);
     else removeConvexWord({ wordId: id as Parameters<typeof removeConvexWord>[0]["wordId"] });
+  }
+
+  function startEdit(w: DisplayWord) {
+    setEditingId(w.id);
+    setEditWord(w.word);
+    setEditTranslation(w.translation);
+    setEditExample(w.example ?? "");
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  async function regenerateEditExample() {
+    if (!editWord.trim()) return;
+    setEditExampleLoading(true);
+    setEditExample("");
+    try {
+      const res = await fetch("/api/generate-example", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ word: editWord.trim(), translation: editTranslation.trim() }),
+      });
+      const data = await res.json();
+      if (data.sentence) setEditExample(data.sentence);
+    } catch {
+      // leave empty
+    } finally {
+      setEditExampleLoading(false);
+    }
+  }
+
+  async function saveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingId || !editWord.trim() || !editTranslation.trim()) return;
+    setEditSaving(true);
+    if (isGuest) {
+      updateGuestWord(editingId, { word: editWord.trim(), translation: editTranslation.trim(), example: editExample.trim() || undefined });
+    } else {
+      await updateConvexWord({
+        wordId: editingId as Parameters<typeof updateConvexWord>[0]["wordId"],
+        word: editWord.trim(),
+        translation: editTranslation.trim(),
+        example: editExample.trim() || undefined,
+      });
+    }
+    setEditingId(null);
+    setEditSaving(false);
   }
 
   if (isLoading) return null;
@@ -236,10 +350,46 @@ export default function DictionaryPage() {
                       placeholder="e.g. resilient"
                       value={wordInput}
                       onChange={(e) => handleWordChange(e.target.value)}
-                      className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2.5 text-sm outline-none focus:border-zinc-400 focus:bg-white"
+                      className={`w-full rounded-xl border bg-zinc-50 px-4 py-2.5 text-sm outline-none focus:bg-white ${spellCheck ? "border-red-300 focus:border-red-400" : "border-zinc-200 focus:border-zinc-400"}`}
                     />
                     {wordInput && <SpeakButton text={wordInput} className="shrink-0 p-1" />}
                   </div>
+                  {/* Spell-check hint */}
+                  {spellCheck && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1 rounded-xl border border-red-100 bg-red-50 px-3 py-2">
+                      <span className="text-xs text-red-400 font-medium shrink-0">Fix:</span>
+                      {(() => {
+                        let remaining = spellCheck.corrected;
+                        const parts: { text: string; isWrong: boolean; wrongVal: string }[] = [];
+                        for (const m of spellCheck.mistakes) {
+                          const idx = remaining.toLowerCase().indexOf(m.right.toLowerCase());
+                          if (idx === -1) continue;
+                          if (idx > 0) parts.push({ text: remaining.slice(0, idx), isWrong: false, wrongVal: "" });
+                          parts.push({ text: remaining.slice(idx, idx + m.right.length), isWrong: true, wrongVal: m.wrong });
+                          remaining = remaining.slice(idx + m.right.length);
+                        }
+                        if (remaining) parts.push({ text: remaining, isWrong: false, wrongVal: "" });
+                        return parts.map((p, i) =>
+                          p.isWrong ? (
+                            <button
+                              key={i}
+                              type="button"
+                              onClick={() => { handleWordChange(spellCheck.corrected); setSpellCheck(null); }}
+                              className="rounded bg-red-200 px-1 py-0.5 text-xs font-semibold text-red-700 underline decoration-wavy decoration-red-500 hover:bg-red-300"
+                              title={`Tap to fix: ${p.wrongVal} → ${p.text}`}
+                            >
+                              {p.text}
+                            </button>
+                          ) : (
+                            <span key={i} className="text-xs text-zinc-600">{p.text}</span>
+                          )
+                        );
+                      })()}
+                    </div>
+                  )}
+                  {spellCheckLoading && !spellCheck && (
+                    <p className="mt-1 text-xs text-zinc-400">Checking spelling…</p>
+                  )}
                 </div>
                 <div>
                   <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-zinc-500">
@@ -259,6 +409,9 @@ export default function DictionaryPage() {
                       </span>
                     )}
                   </div>
+                  {translationFailed && !translation && (
+                    <p className="mt-1 text-xs text-amber-600">Auto-translate unavailable — type the translation above</p>
+                  )}
                 </div>
 
                 {/* Example sentence — AI generated */}
@@ -284,8 +437,21 @@ export default function DictionaryPage() {
                     </div>
                   ) : example ? (
                     <p className="text-sm text-zinc-700 leading-relaxed">
-                      <InteractiveSentence sentence={example} />
+                      <InteractiveSentence
+                        sentence={example}
+                        onAdd={(w, t) => {
+                          const exists = words.some(
+                            (x) => x.word.toLowerCase() === w.toLowerCase()
+                          );
+                          if (exists) return false;
+                          if (isGuest) addGuest(w, t);
+                          else addConvexWord({ word: w, translation: t });
+                          return true;
+                        }}
+                      />
                     </p>
+                  ) : exampleFailed ? (
+                    <p className="text-xs text-amber-600">Example generation unavailable — you can still add the word</p>
                   ) : (
                     <p className="text-sm text-zinc-300">
                       {wordInput.trim().length >= 2 ? "Generating…" : "Enter a word to generate"}
@@ -323,23 +489,72 @@ export default function DictionaryPage() {
         {/* Word list */}
         <ul className="flex flex-col gap-2.5">
           {words.map((w) => (
-            <li key={w.id} className="flex items-center gap-3 rounded-2xl bg-white px-4 py-3.5 shadow-sm ring-1 ring-zinc-100">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="font-semibold text-zinc-900">{w.word}</span>
-                  <SpeakButton text={w.word} />
-                  <span className="text-zinc-300 text-sm">→</span>
-                  <span className="text-zinc-600 text-sm">{w.translation}</span>
-                  <span className={`ml-auto rounded-full px-2 py-0.5 text-xs font-medium ${STATUS[w.status].cls}`}>
-                    {STATUS[w.status].label}
-                  </span>
+            <li key={w.id} className="rounded-2xl bg-white shadow-sm ring-1 ring-zinc-100 overflow-hidden">
+              {editingId === w.id ? (
+                <form onSubmit={saveEdit} className="px-4 py-4 flex flex-col gap-3">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-zinc-400">Edit word</p>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1 text-xs font-medium text-zinc-500"><span>🇬🇧</span> English word</label>
+                    <input
+                      autoFocus
+                      value={editWord}
+                      onChange={(e) => setEditWord(e.target.value)}
+                      className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm outline-none focus:border-zinc-400 focus:bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1 text-xs font-medium text-zinc-500"><span>🇺🇦</span> Translation</label>
+                    <input
+                      value={editTranslation}
+                      onChange={(e) => setEditTranslation(e.target.value)}
+                      className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm outline-none focus:border-zinc-400 focus:bg-white"
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-1 flex items-center justify-between">
+                      <label className="text-xs font-medium text-zinc-500">Example sentence</label>
+                      <button type="button" onClick={regenerateEditExample} className="text-xs text-zinc-400 hover:text-zinc-700">
+                        {editExampleLoading ? "Generating…" : "↻ regenerate"}
+                      </button>
+                    </div>
+                    <textarea
+                      value={editExample}
+                      onChange={(e) => setEditExample(e.target.value)}
+                      rows={2}
+                      className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm outline-none focus:border-zinc-400 focus:bg-white resize-none"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="submit" disabled={editSaving || !editWord.trim() || !editTranslation.trim()}
+                      className="flex-1 rounded-xl bg-zinc-900 py-2 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50">
+                      {editSaving ? "Saving…" : "Save"}
+                    </button>
+                    <button type="button" onClick={cancelEdit} className="rounded-xl px-4 py-2 text-sm text-zinc-500 hover:bg-zinc-100">
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="flex items-center gap-3 px-4 py-3.5">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold text-zinc-900">{w.word}</span>
+                      <SpeakButton text={w.word} />
+                      <span className="text-zinc-300 text-sm">→</span>
+                      <span className="text-zinc-600 text-sm">{w.translation}</span>
+                      <span className={`ml-auto rounded-full px-2 py-0.5 text-xs font-medium ${STATUS[w.status].cls}`}>
+                        {STATUS[w.status].label}
+                      </span>
+                    </div>
+                    {w.example && <ExampleWithTooltip example={w.example} word={w.word} translation={w.translation} />}
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <button onClick={() => handleRemove(w.id)} className="text-zinc-200 hover:text-red-400 transition text-lg leading-none">×</button>
+                    <button onClick={() => startEdit(w)} className="text-zinc-300 hover:text-zinc-600 transition text-xs leading-none">✎</button>
+                    <span className="text-xs text-zinc-300">{w.xp} xp</span>
+                  </div>
                 </div>
-                {w.example && <ExampleWithTooltip example={w.example} word={w.word} translation={w.translation} />}
-              </div>
-              <div className="flex shrink-0 flex-col items-end gap-1">
-                <button onClick={() => handleRemove(w.id)} className="text-zinc-200 hover:text-red-400 transition text-lg leading-none">×</button>
-                <span className="text-xs text-zinc-300">{w.xp} xp</span>
-              </div>
+              )}
             </li>
           ))}
         </ul>

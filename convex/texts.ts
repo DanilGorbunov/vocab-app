@@ -67,18 +67,17 @@ Return ONLY valid JSON, no markdown, no explanation:
   ]
 }`;
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set in Convex env");
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error("OPENAI_API_KEY not set in Convex env");
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        "Authorization": `Bearer ${apiKey}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "gpt-4o-mini",
         max_tokens: 2000,
         messages: [{ role: "user", content: prompt }],
       }),
@@ -86,19 +85,18 @@ Return ONLY valid JSON, no markdown, no explanation:
 
     if (!response.ok) {
       const err = await response.text();
-      throw new Error(`Claude API error: ${err}`);
+      throw new Error(`OpenAI API error: ${err}`);
     }
 
     const data = await response.json();
-    const raw = data.content?.[0]?.text ?? "";
+    const raw = data.choices?.[0]?.message?.content ?? "";
 
     let parsed: { paragraphs: { en: string; uk: string }[] };
     try {
       parsed = JSON.parse(raw);
     } catch {
-      // Try to extract JSON from the response
       const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("Could not parse Claude response");
+      if (!match) throw new Error("Could not parse OpenAI response");
       parsed = JSON.parse(match[0]);
     }
 
