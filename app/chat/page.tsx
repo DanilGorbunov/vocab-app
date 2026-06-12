@@ -46,7 +46,7 @@ export default function ChatPage() {
   const [voiceSupported, setVoiceSupported] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<any>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -118,7 +118,7 @@ export default function ChatPage() {
     rec.onstart = () => setIsListening(true);
     rec.onend = () => setIsListening(false);
     rec.onerror = () => setIsListening(false);
-    rec.onresult = (e: SpeechRecognitionEvent) => {
+    rec.onresult = (e: any) => {
       const transcript = e.results[0][0].transcript;
       sendMessage(transcript);
     };

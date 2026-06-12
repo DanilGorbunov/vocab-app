@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
   try {
-    const { text } = await req.json();
+    const { text, simple } = await req.json();
     if (!text || typeof text !== "string") {
       return NextResponse.json({ error: "No text" }, { status: 400 });
     }
@@ -31,6 +31,12 @@ export async function POST(req: NextRequest) {
     }
 
     const audioBuffer = await ttsRes.arrayBuffer();
+    const audioBase64 = Buffer.from(audioBuffer).toString("base64");
+
+    // simple=true: skip Whisper (no word timestamps needed, faster)
+    if (simple) {
+      return NextResponse.json({ audioBase64 });
+    }
 
     // Step 2: Transcribe with Whisper to get word timestamps
     const formData = new FormData();
@@ -52,8 +58,6 @@ export async function POST(req: NextRequest) {
       words = whisperData.words ?? [];
     }
 
-    // Return audio as base64 + word timings
-    const audioBase64 = Buffer.from(audioBuffer).toString("base64");
     return NextResponse.json({ audioBase64, words });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

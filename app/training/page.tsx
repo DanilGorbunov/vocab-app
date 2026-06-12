@@ -7,7 +7,7 @@ import { useGuestWords, GuestWord } from "@/hooks/useGuestWords";
 import { AppNav } from "@/components/AppNav";
 import { SaveBanner } from "@/components/SaveBanner";
 import { SpeakButton } from "@/components/SpeakButton";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -68,6 +68,9 @@ export default function TrainingPage() {
   const [results, setResults] = useState<boolean[]>([]);
   const [done, setDone] = useState(false);
   const [ready, setReady] = useState(false);
+  const [ttsPlaying, setTtsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioBlobUrlRef = useRef<string | null>(null);
 
   // Build questions once — don't rebuild while a session is in progress
   useEffect(() => {
@@ -89,6 +92,46 @@ export default function TrainingPage() {
       setReady(true);
     }
   }, [isLoading, ready, isGuest, guestWords, convexAll, convexTraining]);
+
+  // Auto-play TTS when a new question appears
+  useEffect(() => {
+    if (!ready || questions.length === 0 || done) return;
+    const q = questions[current];
+    const text = q.word.example
+      ? `${q.word.word}. ${q.word.example}`
+      : q.word.word;
+
+    // Cancel any previous audio
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    if (audioBlobUrlRef.current) { URL.revokeObjectURL(audioBlobUrlRef.current); audioBlobUrlRef.current = null; }
+
+    setTtsPlaying(true);
+    fetch("/api/tts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, simple: true }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.audioBase64) return;
+        const bytes = Uint8Array.from(atob(data.audioBase64), (c) => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: "audio/mpeg" });
+        const url = URL.createObjectURL(blob);
+        audioBlobUrlRef.current = url;
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => setTtsPlaying(false);
+        audio.onerror = () => setTtsPlaying(false);
+        audio.play().catch(() => setTtsPlaying(false));
+      })
+      .catch(() => setTtsPlaying(false));
+  }, [current, ready, done]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cleanup on unmount
+  useEffect(() => () => {
+    if (audioRef.current) { audioRef.current.pause(); }
+    if (audioBlobUrlRef.current) { URL.revokeObjectURL(audioBlobUrlRef.current); }
+  }, []);
 
   async function handleSelect(option: string) {
     if (selected !== null) return;
@@ -231,7 +274,15 @@ export default function TrainingPage() {
           <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-400">Translate to Ukrainian</p>
           <div className="flex items-center justify-center gap-3">
             <h2 className="text-4xl font-bold tracking-tight text-zinc-900">{q.word.word}</h2>
-            <SpeakButton text={q.word.word} className="text-zinc-300 hover:text-zinc-600 p-1" />
+            {ttsPlaying ? (
+              <span className="flex gap-[3px] items-end h-5 px-1">
+                <span className="w-[3px] rounded-full bg-zinc-400 animate-[bounce_0.8s_ease-in-out_infinite]" style={{ height: "10px", animationDelay: "0ms" }} />
+                <span className="w-[3px] rounded-full bg-zinc-400 animate-[bounce_0.8s_ease-in-out_infinite]" style={{ height: "14px", animationDelay: "150ms" }} />
+                <span className="w-[3px] rounded-full bg-zinc-400 animate-[bounce_0.8s_ease-in-out_infinite]" style={{ height: "10px", animationDelay: "300ms" }} />
+              </span>
+            ) : (
+              <SpeakButton text={q.word.word} className="text-zinc-300 hover:text-zinc-600 p-1" />
+            )}
           </div>
           {q.word.example && (
             <p className="mt-3 text-sm italic text-zinc-400 leading-relaxed">{q.word.example}</p>
