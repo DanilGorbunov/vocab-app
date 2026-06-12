@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "edge"; // Runs on Cloudflare edge, not AWS Lambda — bypasses YouTube IP blocks
+
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 
 // Try multiple clients in order — Vercel IPs may be blocked for some
