@@ -144,7 +144,7 @@ export default function TrainingPage() {
       const w = questions[current].word;
       const newXp = Math.max(0, w.xp + (isCorrect ? 10 : -5));
       const newStatus = newXp >= 100 ? "mastered" : newXp >= 30 ? "learning" : "new";
-      updateWord(w.id, { xp: newXp, status: newStatus as GuestWord["status"], lastPracticed: Date.now() });
+      updateWord(w.id, { xp: newXp, status: newStatus as GuestWord["status"] });
     } else {
       await submitAnswer({
         wordId: questions[current].word.id as Id<"words">,
