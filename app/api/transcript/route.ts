@@ -61,7 +61,10 @@ async function getTracksFromPage(videoId: string, userAgent: string): Promise<Ca
   return tracks?.length ? (tracks as CaptionTrack[]) : null;
 }
 
-async function fetchSegments(baseUrl: string) {
+async function fetchSegments(rawBaseUrl: string) {
+  const baseUrl = rawBaseUrl.startsWith("/")
+    ? `https://www.youtube.com${rawBaseUrl}`
+    : rawBaseUrl;
   const res = await fetch(baseUrl + "&fmt=json3", {
     headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
   });
