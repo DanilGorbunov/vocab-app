@@ -61,23 +61,49 @@ async function getTracksFromPage(videoId: string, userAgent: string): Promise<Ca
   return tracks?.length ? (tracks as CaptionTrack[]) : null;
 }
 
+function parseXml(xml: string) {
+  const segments: { start: number; dur: number; text: string }[] = [];
+  const re = /<text[^>]+start="([^"]+)"[^>]*dur="([^"]+)"[^>]*>([^<]*)<\/text>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const text = m[3]
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " ").trim();
+    if (text) segments.push({ start: parseFloat(m[1]), dur: parseFloat(m[2]), text });
+  }
+  return segments;
+}
+
 async function fetchSegments(rawBaseUrl: string) {
   const baseUrl = rawBaseUrl.startsWith("/")
     ? `https://www.youtube.com${rawBaseUrl}`
     : rawBaseUrl;
-  const res = await fetch(baseUrl + "&fmt=json3", {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-  });
+
+  const headers = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" };
+
+  // Try JSON3 format first
+  const res = await fetch(baseUrl + "&fmt=json3", { headers });
   if (!res.ok) throw new Error(`Transcript fetch failed: ${res.status}`);
-  const data = await res.json();
-  return (data.events ?? [])
-    .filter((e: Record<string, unknown>) => Array.isArray(e.segs))
-    .map((e: Record<string, unknown>) => ({
-      start: typeof e.tStartMs === "number" ? e.tStartMs / 1000 : 0,
-      dur: typeof e.dDurationMs === "number" ? e.dDurationMs / 1000 : 0,
-      text: (e.segs as { utf8?: string }[]).map((s) => s.utf8 ?? "").join("").replace(/\n/g, " ").trim(),
-    }))
-    .filter((s: { text: string }) => s.text.length > 0);
+  const body = await res.text();
+  if (!body.trim()) throw new Error("Empty transcript response");
+
+  // Parse as JSON; fall back to XML if it's not valid JSON
+  try {
+    const data = JSON.parse(body);
+    return (data.events ?? [])
+      .filter((e: Record<string, unknown>) => Array.isArray(e.segs))
+      .map((e: Record<string, unknown>) => ({
+        start: typeof e.tStartMs === "number" ? e.tStartMs / 1000 : 0,
+        dur: typeof e.dDurationMs === "number" ? e.dDurationMs / 1000 : 0,
+        text: (e.segs as { utf8?: string }[]).map((s) => s.utf8 ?? "").join("").replace(/\n/g, " ").trim(),
+      }))
+      .filter((s: { text: string }) => s.text.length > 0);
+  } catch {
+    // Fall back: fetch without fmt param (returns XML by default)
+    const xmlRes = await fetch(baseUrl, { headers });
+    if (!xmlRes.ok) throw new Error("XML transcript fetch failed");
+    return parseXml(await xmlRes.text());
+  }
 }
 
 const USER_AGENTS = [
